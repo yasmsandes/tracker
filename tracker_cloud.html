@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>⚡ Tracker Acadêmico</title>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet"/>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#0f1117;color:#e2e8f0;font-family:'Space Grotesk',sans-serif}
+    ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:#0f1117}::-webkit-scrollbar-thumb{background:#2a3050;border-radius:3px}
+    input,select,textarea{background:#0f1117;border:1px solid #2a3050;border-radius:8px;color:#e2e8f0;font-family:'Space Grotesk',sans-serif;font-size:14px;padding:8px 12px;width:100%;outline:none;transition:border-color .2s}
+    input:focus,select:focus,textarea:focus{border-color:#5b8af5}
+    input[type=checkbox]{width:16px;height:16px;accent-color:#5b8af5;cursor:pointer}
+    input[type=range]{padding:0;border:none;background:transparent;accent-color:#5b8af5}
+    button{cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all .15s}
+    select option{background:#181c27}
+    a{text-decoration:none}
+    .sync-pulse{animation:pulse 1.5s ease-in-out infinite}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ═══════════════════════════════════════════════════════════
+// CONFIGURAÇÃO DE NUVEM — preencha após criar conta JSONBin
+// ═══════════════════════════════════════════════════════════
+const CLOUD_CONFIG_KEY = "tracker_cloud_config";
+
+const G = {
+  bg:"#0f1117", surface:"#181c27", card:"#1e2335", border:"#2a3050",
+  accent:"#5b8af5", accent2:"#a78bfa", accent3:"#34d399",
+  warn:"#fb923c", danger:"#f87171", text:"#e2e8f0", muted:"#64748b",
+  tag:{
+    "Cálculo 1":"#3b82f6","Álgebra Linear 1":"#8b5cf6",
+    "Estrutura de Dados Python":"#06b6d4","Filosofia da Tecnologia":"#ec4899",
+    "Inteligência Computacional":"#f59e0b","Ética Cristã":"#10b981",
+    "Orientação e Trajetória 1":"#6366f1","Projetos em Sistema Inteligente":"#14b8a6",
+    "Relatório/Documento":"#60a5fa","Reunião/Apresentação":"#c084fc",
+    "Projeto com Prazo":"#fb923c","Paper/Artigo":"#34d399",
+    "Prova / Avaliação":"#f87171","Entrega de Trabalho":"#fb923c",
+    "Entrega de Exercícios":"#facc15","Seminário / Apresentação":"#e879f9",
+  }
+};
+
+const tagColor = n => G.tag[n]||G.accent;
+const today = () => new Date().toISOString().split("T")[0];
+const fmt = d => d ? new Date(d+"T12:00:00").toLocaleDateString("pt-BR",{day:"2-digit",month:"short",year:"numeric"}) : "—";
+const daysLeft = d => { if(!d) return null; return Math.ceil((new Date(d+"T12:00:00")-new Date())/86400000); };
+
+// ═══════════════════════════════════════════════════════════
+// SYNC ENGINE — JSONBin.io
+// ═══════════════════════════════════════════════════════════
+async function cloudSave(config, data) {
+  if(!config.apiKey || !config.binId) return { ok:false, err:"Não configurado" };
+  try {
+    const r = await fetch(`https://api.jsonbin.io/v3/b/${config.binId}`, {
+      method:"PUT",
+      headers:{"Content-Type":"application/json","X-Master-Key":config.apiKey,"X-Bin-Versioning":"false"},
+      body: JSON.stringify(data)
+    });
+    return r.ok ? { ok:true } : { ok:false, err:`HTTP ${r.status}` };
+  } catch(e) { return { ok:false, err:e.message }; }
+}
+
+async function cloudLoad(config) {
+  if(!config.apiKey || !config.binId) return null;
+  try {
+    const r = await fetch(`https://api.jsonbin.io/v3/b/${config.binId}/latest`, {
+      headers:{"X-Master-Key":config.apiKey}
+    });
+    if(!r.ok) return null;
+    const j = await r.json();
+    return j.record || null;
+  } catch { return null; }
+}
+
+async function createBin(apiKey) {
+  try {
+    const r = await fetch("https://api.jsonbin.io/v3/b", {
+      method:"POST",
+      headers:{"Content-Type":"application/json","X-Master-Key":apiKey,"X-Bin-Name":"tracker-academico","X-Collection-Name":"tracker"},
+      body: JSON.stringify({ studies:[], tasks:[], papers:[] })
+    });
+    if(!r.ok) return null;
+    const j = await r.json();
+    return j.metadata?.id || null;
+  } catch { return null; }
+}
+
+// ═══════════════════════════════════════════════════════════
+// COMPONENTES BASE
+// ═══════════════════════════════════════════════════════════
+const Badge = ({ label, color }) => (
+  <span style={{background:color+"22",color,border:`1px solid ${color}55`,borderRadius:20,padding:"2px 10px",fontSize:12,fontWeight:600,whiteSpace:"nowrap"}}>{label}</span>
+);
+const Pill = ({ active, onClick, children, color }) => (
+  <button onClick={onClick} style={{background:active?(color||G.accent)+"22":"transparent",color:active?color||G.accent:G.muted,border:`1px solid ${active?color||G.accent:G.border}`,borderRadius:20,padding:"5px 14px",fontSize:13,fontWeight:600}}>{children}</button>
+);
+const Btn = ({ onClick, children, color, small, outline, disabled }) => (
+  <button onClick={onClick} disabled={disabled} style={{background:outline?"transparent":color||G.accent,border:`1px solid ${color||G.accent}`,color:outline?color||G.accent:"#fff",borderRadius:8,padding:small?"5px 12px":"8px 18px",fontSize:small?12:14,fontWeight:600,opacity:disabled?.5:1}}>
+    {children}
+  </button>
+);
+const StatCard = ({ label, value, color, icon }) => (
+  <div style={{background:G.card,border:`1px solid ${G.border}`,borderRadius:12,padding:"16px 20px",display:"flex",flexDirection:"column",gap:4}}>
+    <span style={{fontSize:22}}>{icon}</span>
+    <span style={{fontSize:28,fontWeight:700,color:color||G.accent}}>{value}</span>
+    <span style={{fontSize:12,color:G.muted}}>{label}</span>
+  </div>
+);
+const DiffDots = ({ level }) => [1,2,3,4,5].map(n=>(
+  <div key={n} style={{width:10,height:10,borderRadius:"50%",background:n<=level?(level<=2?G.accent3:level===3?"#facc15":G.danger):G.border}}/>
+));
+const Field = ({ label, children }) => (
+  <div style={{display:"flex",flexDirection:"column",gap:6}}>
+    <label style={{fontSize:12,fontWeight:600,color:G.muted,textTransform:"uppercase",letterSpacing:1}}>{label}</label>
+    {children}
+  </div>
+);
+
+// ═══════════════════════════════════════════════════════════
+// BARRA DE STATUS SYNC
+// ═══════════════════════════════════════════════════════════
+function SyncBar({ status, lastSync, onSync, cloudConfigured }) {
+  const colors = { idle:G.muted, saving:G.accent, saved:G.accent3, error:G.danger, loading:G.accent };
+  const icons  = { idle:"☁️", saving:"⟳", saved:"✅", error:"⚠️", loading:"⟳" };
+  const labels = { idle:"Não salvo na nuvem", saving:"Salvando...", saved:`Sincronizado ${lastSync?"às "+lastSync:""}`, error:"Erro ao sincronizar", loading:"Carregando da nuvem..." };
+
+  if(!cloudConfigured) return (
+    <div style={{background:"#fb923c11",border:"1px solid #fb923c44",borderRadius:8,padding:"6px 14px",fontSize:12,color:G.warn,display:"flex",alignItems:"center",gap:6}}>
+      ☁️ <span>Modo offline — <strong>configure a nuvem</strong> para sincronizar entre dispositivos</span>
+    </div>
+  );
+
+  return (
+    <div style={{background:colors[status]+"11",border:`1px solid ${colors[status]}44`,borderRadius:8,padding:"6px 14px",fontSize:12,color:colors[status],display:"flex",alignItems:"center",gap:8}}>
+      <span className={status==="saving"||status==="loading"?"sync-pulse":""}>{icons[status]}</span>
+      <span style={{flex:1}}>{labels[status]}</span>
+      {status==="error" && <Btn small outline color={G.warn} onClick={onSync}>Tentar novamente</Btn>}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// CONFIGURAÇÃO DE NUVEM
+// ═══════════════════════════════════════════════════════════
+function CloudSetup({ config, onSave }) {
+  const [apiKey, setApiKey] = useState(config.apiKey||"");
+  const [binId, setBinId]   = useState(config.binId||"");
+  const [creating, setCreating] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  const handleCreate = async () => {
+    if(!apiKey.trim()) { setMsg({type:"error",text:"Informe a API Key primeiro"}); return; }
+    setCreating(true); setMsg(null);
+    const id = await createBin(apiKey.trim());
+    setCreating(false);
+    if(id) { setBinId(id); setMsg({type:"ok",text:`Bin criado! ID: ${id}`}); }
+    else setMsg({type:"error",text:"Erro ao criar bin. Verifique a API Key."});
+  };
+
+  const handleSave = () => {
+    if(!apiKey.trim()||!binId.trim()) { setMsg({type:"error",text:"Preencha API Key e Bin ID"}); return; }
+    onSave({ apiKey:apiKey.trim(), binId:binId.trim() });
+    setMsg({type:"ok",text:"Configuração salva! Sincronizando..."});
+  };
+
+  const Step = ({n,title,body,code,link}) => (
+    <div style={{display:"flex",gap:14,marginBottom:12,padding:14,background:G.bg,borderRadius:10,border:`1px solid ${G.border}`}}>
+      <div style={{width:28,height:28,background:G.accent+"33",color:G.accent,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:13,flexShrink:0}}>{n}</div>
+      <div style={{flex:1}}>
+        <p style={{fontWeight:700,marginBottom:3,fontSize:14}}>{title}</p>
+        <p style={{fontSize:13,color:G.muted,lineHeight:1.6}}>{body}</p>
+        {code && <div style={{background:G.card,borderRadius:6,padding:"6px 10px",marginTop:6,fontFamily:"'JetBrains Mono',monospace",fontSize:12,color:G.accent3}}>{code}</div>}
+        {link && <a href={link} target="_blank" rel="noreferrer" style={{color:G.accent,fontSize:13,display:"block",marginTop:4}}>{link}</a>}
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:20}}>
+
+      {/* Formulário de config */}
+      <div style={{background:G.card,border:`1px solid ${G.border}`,borderRadius:16,padding:24}}>
+        <h3 style={{fontSize:16,fontWeight:700,marginBottom:4}}>☁️ Configurar Sincronização em Nuvem</h3>
+        <p style={{fontSize:13,color:G.muted,marginBottom:20}}>Usa o <strong style={{color:G.text}}>JSONBin.io</strong> — gratuito, sem cartão, sem limite de uso pessoal.</p>
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}}>
+          <Field label="API Key (X-Master-Key)">
+            <input type="password" placeholder="$2a$10$..." value={apiKey} onChange={e=>setApiKey(e.target.value)}/>
+          </Field>
+          <Field label="Bin ID">
+            <div style={{display:"flex",gap:8}}>
+              <input placeholder="64a3f... (gerado abaixo)" value={binId} onChange={e=>setBinId(e.target.value)}/>
+              <Btn onClick={handleCreate} disabled={creating} color={G.accent2} small>{creating?"...":"Criar"}</Btn>
+            </div>
+          </Field>
+        </div>
+
+        {msg && (
+          <div style={{background:(msg.type==="ok"?G.accent3:G.danger)+"22",border:`1px solid ${msg.type==="ok"?G.accent3:G.danger}`,borderRadius:8,padding:"8px 12px",fontSize:13,marginBottom:14,color:msg.type==="ok"?G.accent3:G.danger}}>
+            {msg.text}
+          </div>
+        )}
+
+        <Btn onClick={handleSave} color={G.accent3}>💾 Salvar e Ativar Sincronização</Btn>
+      </div>
+
+      {/* Passo a passo */}
+      <div style={{background:G.card,border:`1px solid ${G.border}`,borderRadius:16,padding:24}}>
+        <h3 style={{fontSize:16,fontWeight:700,marginBottom:16}}>📋 Como configurar (5 minutos)</h3>
+        <Step n="1" title="Crie conta no JSONBin.io" body="Acesse jsonbin.io e cadastre-se com seu e-mail. É gratuito." link="https://jsonbin.io"/>
+        <Step n="2" title="Copie sua API Key" body='No painel do JSONBin, clique no seu perfil → "API Keys" → copie a chave que começa com $2a$10$...'/>
+        <Step n="3" title="Cole a API Key acima e clique em Criar" body='Cole no campo "API Key" e clique no botão "Criar" ao lado do campo Bin ID. Isso cria automaticamente o banco de dados na nuvem.'/>
+        <Step n="4" title="Clique em Salvar e Ativar" body="Pronto! O tracker começa a sincronizar automaticamente. Todos os dispositivos que abrirem a mesma URL vão compartilhar os mesmos dados."/>
+        <Step n="5" title="Hospede no GitHub Pages (opcional mas recomendado)" body="Para ter uma URL fixa e acessar de qualquer dispositivo. Veja a aba 🚀 Deploy." />
+      </div>
+
+      {/* Info sobre segurança */}
+      <div style={{background:"#1e2335",border:`1px solid ${G.border}`,borderRadius:12,padding:16,fontSize:13,color:G.muted}}>
+        <p style={{fontWeight:600,color:G.text,marginBottom:6}}>🔒 Segurança</p>
+        <p>A API Key fica salva só no seu dispositivo (localStorage). O bin é privado por padrão no JSONBin — só quem tem a chave consegue acessar. Não compartilhe sua API Key.</p>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// DEPLOY — GitHub Pages
+// ═══════════════════════════════════════════════════════════
+function DeployGuide() {
+  const Step = ({n,title,body,code,link}) => (
+    <div style={{display:"flex",gap:14,marginBottom:12,padding:14,background:G.bg,borderRadius:10,border:`1px solid ${G.border}`}}>
+      <div style={{width:28,height:28,background:"#f0f6ff22",color:"#f0f6ff",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:13,flexShrink:0}}>{n}</div>
+      <div style={{flex:1}}>
+        <p style={{fontWeight:700,marginBottom:3,fontSize:14}}>{title}</p>
+        <p style={{fontSize:13,color:G.muted,lineHeight:1.6}}>{body}</p>
+        {code && <div style={{background:G.card,borderRadius:6,padding:"6px 10px",marginTop:6,fontFamily:"'JetBrains Mono',monospace",fontSize:12,color:"#7dd3fc",whiteSpace:"pre-wrap"}}>{code}</div>}
+        {link && <a href={link} target="_blank" rel="noreferrer" style={{color:"#7dd3fc",fontSize:13,display:"block",marginTop:4}}>{link}</a>}
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:20}}>
+      <div style={{background:G.card,border:"1px solid #f0f6ff22",borderRadius:16,padding:24}}>
+        <div style={{display:"flex",gap:12,alignItems:"center",marginBottom:16}}>
+          <span style={{fontSize:32}}>🚀</span>
+          <div>
+            <h3 style={{fontSize:16,fontWeight:700}}>Publicar no GitHub Pages</h3>
+            <p style={{fontSize:13,color:G.muted}}>URL fixa gratuita — acessível em qualquer dispositivo com internet.</p>
+          </div>
+        </div>
+
+        <div style={{background:"#7dd3fc11",border:"1px solid #7dd3fc33",borderRadius:10,padding:"10px 14px",marginBottom:20,fontSize:13,color:"#7dd3fc"}}>
+          📌 Resultado final: <strong>https://SEU_USUARIO.github.io/tracker</strong> — abre no celular, tablet e PC, sempre com os dados sincronizados.
+        </div>
+
+        <Step n="1" title="Crie conta no GitHub" body="Acesse github.com e crie uma conta gratuita se ainda não tiver." link="https://github.com"/>
+        <Step n="2" title="Crie um repositório novo" body='Clique em "New repository". Nome sugerido: tracker. Marque "Public". Clique em "Create repository".'/>
+        <Step n="3" title="Faça upload do arquivo HTML" body='Na página do repositório, clique em "uploading an existing file". Arraste o arquivo tracker_cloud.html e renomeie para index.html. Confirme o commit.'/>
+        <Step n="4" title="Ative o GitHub Pages"
+          body='Vá em "Settings" → "Pages" (menu lateral). Em "Source", selecione "Deploy from a branch". Escolha a branch "main" e pasta "/ (root)". Clique em "Save".'/>
+        <Step n="5" title="Acesse sua URL" body='Em ~2 minutos sua URL estará ativa em:' code="https://SEU_USUARIO.github.io/tracker"/>
+        <Step n="6" title="Adicione ao celular como app" body='No Android (Chrome): abra a URL → menu ⋮ → "Adicionar à tela inicial". No tablet: mesmo processo. Vai aparecer como ícone de app na tela inicial!'/>
+        <Step n="7" title="Atualizações futuras" body='Para atualizar o tracker, basta voltar ao repositório no GitHub, clicar no arquivo index.html → editar → substituir o conteúdo → commit. O GitHub Pages atualiza em segundos.'/>
+      </div>
+
+      <div style={{background:G.card,border:`1px solid ${G.border}`,borderRadius:16,padding:24}}>
+        <h4 style={{fontSize:15,fontWeight:700,marginBottom:12}}>📱 Como adicionar ao celular Android</h4>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+          {[
+            {icon:"🌐",title:"Abra no Chrome",body:"Acesse a URL do GitHub Pages no Chrome do celular"},
+            {icon:"⋮",title:"Menu do Chrome",body:"Toque nos 3 pontinhos no canto superior direito"},
+            {icon:"📲",title:"Adicionar à tela",body:'Selecione "Adicionar à tela inicial"'},
+            {icon:"✅",title:"Pronto!",body:"O ícone aparece como app. Abre em tela cheia, sem barra de URL"},
+          ].map((s,i)=>(
+            <div key={i} style={{background:G.bg,borderRadius:10,padding:14,border:`1px solid ${G.border}`}}>
+              <span style={{fontSize:24,display:"block",marginBottom:6}}>{s.icon}</span>
+              <p style={{fontWeight:600,fontSize:13,marginBottom:4}}>{s.title}</p>
+              <p style={{fontSize:12,color:G.muted}}>{s.body}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// ESTUDOS
+// ═══════════════════════════════════════════════════════════
+const STUDY_SUBJECTS = ["Cálculo 1","Álgebra Linear 1","Estrutura de Dados Python","Filosofia da Tecnologia","Inteligência Computacional","Ética Cristã","Orientação e Trajetória 1","Projetos em Sistema Inteligente"];
+const DIFF_LABELS = {1:"Muito Fácil",2:"Fácil",3:"Médio",4:"Difícil",5:"Muito Difícil"};
+const emptyStudy = () => ({date:today(),subject:STUDY_SUBJECTS[0],topic:"",sections:"",exercises:"",difficulty:3,needsReview:false,notes:""});
+
+function StudySection({ entries, setEntries }) {
+  const [form,setForm] = useState(emptyStudy());
+  const [filter,setFilter] = useState("all");
+  const add = () => { if(!form.topic.trim()) return; setEntries(p=>[...p,{...form,id:Date.now()}]); setForm({...emptyStudy(),subject:form.subject}); };
+  const del = id => setEntries(p=>p.filter(e=>e.id!==id));
+  const toggleRev = id => setEntries(p=>p.map(e=>e.id===id?{...e,needsReview:!e.needsReview}:e));
+  const filtered = filter==="all"?entries:filter==="review"?entries.filter(e=>e.needsReview):entries.filter(e=>e.subject===filter);
+  const stats = {total:entries.length,review:entries.filter(e=>e.needsReview).length,avg:entries.length>0?(entries.reduce((s,e)=>s+e.difficulty,0)/entries.length).toFixed(1):0};
+  const sc = STUDY_SUBJECTS.reduce((a,s)=>{a[s]=entries.filter(e=>e.subject===s).length;return a},{});
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:20}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:12}}>
+        <StatCard label="Registros" value={stats.total} icon="📚" color={G.accent}/>
+        <StatCard label="P/ Revisar" value={stats.review} icon="🔁" color={G.warn}/>
+        <StatCard label="Dif. Média" value={stats.avg} icon="📊" color={G.accent2}/>
+      </div>
+      <div style={{background:G.card,border:`1px solid ${G.border}`,borderRadius:16,padding:24}}>
+        <h3 style={{fontSize:16,fontWeight:700,marginBottom:16,color:G.accent}}>+ Novo Registro de Estudo</h3>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+          <Field label="Data"><input type="date" value={form.date} onChange={e=>setForm({...form,date:e.target.value})}/></Field>
+          <Field label="Disciplina"><select value={form.subject} onChange={e=>setForm({...form,subject:e.target.value})}>{STUDY_SUBJECTS.map(s=><option key={s}>{s}</option>)}</select></Field>
+          <Field label="Tópico"><input placeholder="Ex: Derivadas, Matrizes..." value={form.topic} onChange={e=>setForm({...form,topic:e.target.value})}/></Field>
+          <Field label="Seções do Livro"><input placeholder="Ex: Stewart 3.1..." value={form.sections} onChange={e=>setForm({...form,sections:e.target.value})}/></Field>
+          <Field label="Exercícios"><input placeholder="Ex: 1-15 pares..." value={form.exercises} onChange={e=>setForm({...form,exercises:e.target.value})}/></Field>
+          <Field label={`Dificuldade — ${DIFF_LABELS[form.difficulty]}`}><input type="range" min={1} max={5} value={form.difficulty} onChange={e=>setForm({...form,difficulty:+e.target.value})}/></Field>
+        </div>
+        <div style={{marginTop:14}}><Field label="Observações"><textarea rows={3} placeholder="Anote dúvidas, insights..." value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})}/></Field></div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:14}}>
+          <label style={{display:"flex",gap:8,alignItems:"center",fontSize:14,color:G.muted,cursor:"pointer"}}>
+            <input type="checkbox" checked={form.needsReview} onChange={e=>setForm({...form,needsReview:e.target.checked})}/>Precisa revisar?
+          </label>
+          <Btn onClick={add}>Adicionar Registro</Btn>
+        </div>
+      </div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+        <Pill active={filter==="all"} onClick={()=>setFilter("all")}>Todos ({stats.total})</Pill>
+        <Pill active={filter==="review"} onClick={()=>setFilter("review")} color={G.warn}>Revisar ({stats.review})</Pill>
+        {STUDY_SUBJECTS.map(s=><Pill key={s} active={filter===s} onClick={()=>setFilter(s)} color={tagColor(s)}>{s.split(" ").slice(0,2).join(" ")} ({sc[s]})</Pill>)}
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:12}}>
+        {filtered.length===0 ? <div style={{background:G.card,borderRadius:12,padding:40,textAlign:"center",color:G.muted}}>Nenhum registro. Adicione seu primeiro estudo! 📖</div>
+        : [...filtered].sort((a,b)=>b.date.localeCompare(a.date)).map(e=>(
+          <div key={e.id} style={{background:G.card,border:`1px solid ${G.border}`,borderRadius:14,padding:20}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+              <div style={{flex:1}}>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:8}}>
+                  <Badge label={e.subject} color={tagColor(e.subject)}/><span style={{fontSize:12,color:G.muted,alignSelf:"center"}}>{fmt(e.date)}</span>
+                  {e.needsReview && <Badge label="🔁 Revisar" color={G.warn}/>}
+                </div>
+                <h4 style={{fontSize:16,fontWeight:700,marginBottom:4}}>{e.topic}</h4>
+                {e.sections && <p style={{fontSize:13,color:G.muted}}>📖 {e.sections}</p>}
+                {e.exercises && <p style={{fontSize:13,color:G.muted}}>✏️ {e.exercises}</p>}
+                <div style={{display:"flex",gap:4,alignItems:"center",marginTop:8}}><span style={{fontSize:12,color:G.muted}}>Dificuldade:</span><DiffDots level={e.difficulty}/><span style={{fontSize:12,color:G.muted}}>({DIFF_LABELS[e.difficulty]})</span></div>
+                {e.notes && <div style={{background:G.bg,borderRadius:8,padding:"8px 12px",marginTop:10,fontSize:13,color:G.muted}}>💬 {e.notes}</div>}
+              </div>
+              <div style={{display:"flex",gap:6,marginLeft:12}}>
+                <Btn small outline color={e.needsReview?G.warn:G.muted} onClick={()=>toggleRev(e.id)}>🔁</Btn>
+                <Btn small outline color={G.danger} onClick={()=>del(e.id)}>✕</Btn>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// TAREFAS
+// ═══════════════════════════════════════════════════════════
+const TASK_TYPES_BY_CAT = {
+  Trabalho:["Relatório/Documento","Reunião/Apresentação","Projeto com Prazo"],
+  Pesquisa:["Paper/Artigo","Projeto com Prazo"],
+  Faculdade:["Prova / Avaliação","Entrega de Trabalho","Entrega de Exercícios","Seminário / Apresentação"],
+};
+const TASK_STATUS = ["Pendente","Em andamento","Concluído"];
+const STATUS_COLOR = {Pendente:G.warn,"Em andamento":G.accent,Concluído:G.accent3};
+const PRIO_COLOR = {Alta:G.danger,Média:G.warn,Baixa:G.accent3};
+const CAT_COLOR = {Trabalho:G.accent,Pesquisa:G.accent3,Faculdade:"#e879f9"};
+const emptyTask = () => ({title:"",type:"Relatório/Documento",category:"Trabalho",subject:"",deadline:"",time:"",location:"",status:"Pendente",priority:"Média",notes:"",gcalSynced:false});
+
+const gcalLink = task => {
+  if(!task.deadline) return null;
+  const d = task.deadline.replace(/-/g,"");
+  let dates;
+  if(task.time){const[h,m]=task.time.split(":");const eH=String(+h+1).padStart(2,"0");dates=`${d}T${h}${m}00/${d}T${eH}${m}00`;}
+  else dates=`${d}/${d}`;
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(`[${task.type}] ${task.title}`)}&dates=${dates}&details=${encodeURIComponent(`Tipo: ${task.type}\nCategoria: ${task.category}${task.subject?`\nDisciplina: ${task.subject}`:""}${task.notes?`\n\n${task.notes}`:""}\n\n📌 Tracker Acadêmico`)}&location=${encodeURIComponent(task.location||"")}`;
+};
+
+function TaskSection({ entries, setEntries }) {
+  const [form,setForm] = useState(emptyTask());
+  const [filter,setFilter] = useState("all");
+  const typesForCat = TASK_TYPES_BY_CAT[form.category]||[];
+  const handleCatChange = cat => setForm({...form,category:cat,type:TASK_TYPES_BY_CAT[cat][0],subject:""});
+  const add = () => { if(!form.title.trim()) return; setEntries(p=>[...p,{...form,id:Date.now(),createdAt:today()}]); setForm(emptyTask()); };
+  const del = id => setEntries(p=>p.filter(e=>e.id!==id));
+  const setStatus = (id,status) => setEntries(p=>p.map(e=>e.id===id?{...e,status}:e));
+  const markSynced = id => setEntries(p=>p.map(e=>e.id===id?{...e,gcalSynced:true}:e));
+  const filtered = filter==="all"?entries:filter==="overdue"?entries.filter(e=>{const d=daysLeft(e.deadline);return d!==null&&d<0&&e.status!=="Concluído";}):filter==="urgent"?entries.filter(e=>{const d=daysLeft(e.deadline);return d!==null&&d>=0&&d<=2&&e.status!=="Concluído";}):entries.filter(e=>e.status===filter||e.category===filter);
+  const counts = {total:entries.length,pending:entries.filter(e=>e.status==="Pendente").length,done:entries.filter(e=>e.status==="Concluído").length,overdue:entries.filter(e=>{const d=daysLeft(e.deadline);return d!==null&&d<0&&e.status!=="Concluído";}).length,faculdade:entries.filter(e=>e.category==="Faculdade").length};
+  const isFac = form.category==="Faculdade";
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:20}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))",gap:12}}>
+        <StatCard label="Total" value={counts.total} icon="📋" color={G.accent}/>
+        <StatCard label="Pendentes" value={counts.pending} icon="⏳" color={G.warn}/>
+        <StatCard label="Concluídos" value={counts.done} icon="✅" color={G.accent3}/>
+        <StatCard label="Atrasados" value={counts.overdue} icon="🚨" color={G.danger}/>
+        <StatCard label="Faculdade" value={counts.faculdade} icon="🎓" color="#e879f9"/>
+      </div>
+      <div style={{background:G.card,border:`1px solid ${G.border}`,borderRadius:16,padding:24}}>
+        <h3 style={{fontSize:16,fontWeight:700,marginBottom:16,color:G.accent2}}>+ Nova Tarefa / Evento</h3>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+          <Field label="Categoria"><select value={form.category} onChange={e=>handleCatChange(e.target.value)}><option>Trabalho</option><option>Pesquisa</option><option>Faculdade</option></select></Field>
+          <Field label="Tipo"><select value={form.type} onChange={e=>setForm({...form,type:e.target.value})}>{typesForCat.map(t=><option key={t}>{t}</option>)}</select></Field>
+          <Field label="Título"><input placeholder={isFac?"Ex: Prova 1 de Cálculo...":"Descreva a tarefa..."} value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></Field>
+          {isFac && <Field label="Disciplina"><select value={form.subject} onChange={e=>setForm({...form,subject:e.target.value})}><option value="">— Selecione —</option>{STUDY_SUBJECTS.map(s=><option key={s}>{s}</option>)}</select></Field>}
+          <Field label="Data / Prazo"><input type="date" value={form.deadline} onChange={e=>setForm({...form,deadline:e.target.value})}/></Field>
+          {isFac && <Field label="Horário (opcional)"><input type="time" value={form.time} onChange={e=>setForm({...form,time:e.target.value})}/></Field>}
+          {isFac && <Field label="Local (opcional)"><input placeholder="Ex: Sala 305..." value={form.location} onChange={e=>setForm({...form,location:e.target.value})}/></Field>}
+          <Field label="Prioridade"><select value={form.priority} onChange={e=>setForm({...form,priority:e.target.value})}><option>Alta</option><option>Média</option><option>Baixa</option></select></Field>
+          <Field label="Status"><select value={form.status} onChange={e=>setForm({...form,status:e.target.value})}>{TASK_STATUS.map(s=><option key={s}>{s}</option>)}</select></Field>
+          <Field label="Observações"><textarea rows={2} placeholder="Detalhes..." value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})}/></Field>
+        </div>
+        <div style={{display:"flex",justifyContent:"flex-end",marginTop:14}}><Btn onClick={add} color={G.accent2}>Adicionar</Btn></div>
+      </div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+        <Pill active={filter==="all"} onClick={()=>setFilter("all")}>Todas ({counts.total})</Pill>
+        <Pill active={filter==="Faculdade"} onClick={()=>setFilter("Faculdade")} color="#e879f9">🎓 Faculdade ({counts.faculdade})</Pill>
+        <Pill active={filter==="Trabalho"} onClick={()=>setFilter("Trabalho")} color={G.accent}>Trabalho</Pill>
+        <Pill active={filter==="Pesquisa"} onClick={()=>setFilter("Pesquisa")} color={G.accent3}>Pesquisa</Pill>
+        <Pill active={filter==="Pendente"} onClick={()=>setFilter("Pendente")} color={G.warn}>Pendentes</Pill>
+        <Pill active={filter==="Em andamento"} onClick={()=>setFilter("Em andamento")} color={G.accent}>Em andamento</Pill>
+        <Pill active={filter==="Concluído"} onClick={()=>setFilter("Concluído")} color={G.accent3}>Concluídos</Pill>
+        <Pill active={filter==="overdue"} onClick={()=>setFilter("overdue")} color={G.danger}>Atrasados ({counts.overdue})</Pill>
+        <Pill active={filter==="urgent"} onClick={()=>setFilter("urgent")} color={G.warn}>Urgentes ≤2d</Pill>
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:12}}>
+        {filtered.length===0 ? <div style={{background:G.card,borderRadius:12,padding:40,textAlign:"center",color:G.muted}}>Nenhuma tarefa! 🎯</div>
+        : [...filtered].sort((a,b)=>!a.deadline?1:!b.deadline?-1:a.deadline.localeCompare(b.deadline)).map(e=>{
+          const dl=daysLeft(e.deadline),isOverdue=dl!==null&&dl<0&&e.status!=="Concluído",isUrgent=dl!==null&&dl>=0&&dl<=2&&e.status!=="Concluído",link=gcalLink(e);
+          return (
+            <div key={e.id} style={{background:G.card,border:`1px solid ${isOverdue?G.danger:isUrgent?G.warn:G.border}`,borderLeft:`4px solid ${CAT_COLOR[e.category]||G.border}`,borderRadius:14,padding:20,opacity:e.status==="Concluído"?.6:1}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                <div style={{flex:1}}>
+                  <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:8}}>
+                    <Badge label={e.category} color={CAT_COLOR[e.category]||G.accent}/><Badge label={e.type} color={tagColor(e.type)}/><Badge label={e.priority} color={PRIO_COLOR[e.priority]}/><Badge label={e.status} color={STATUS_COLOR[e.status]}/>
+                    {e.gcalSynced && <Badge label="📅 No Calendar" color={G.accent3}/>}
+                  </div>
+                  <h4 style={{fontSize:16,fontWeight:700,marginBottom:4,textDecoration:e.status==="Concluído"?"line-through":"none"}}>{e.title}</h4>
+                  {e.subject && <p style={{fontSize:13,color:"#e879f9",marginBottom:2}}>🎓 {e.subject}</p>}
+                  {e.deadline && <p style={{fontSize:13,color:isOverdue?G.danger:isUrgent?G.warn:G.muted}}>📅 {e.time?`${fmt(e.deadline)} às ${e.time}`:fmt(e.deadline)}{dl!==null&&e.status!=="Concluído"&&<span style={{marginLeft:8,fontWeight:600}}>{isOverdue?`⚠️ ${Math.abs(dl)}d atrasado`:dl===0?"🚨 Hoje!":`(${dl}d)`}</span>}</p>}
+                  {e.location && <p style={{fontSize:13,color:G.muted}}>📍 {e.location}</p>}
+                  {e.notes && <div style={{background:G.bg,borderRadius:8,padding:"8px 12px",marginTop:8,fontSize:13,color:G.muted}}>💬 {e.notes}</div>}
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:6,marginLeft:12,minWidth:145}}>
+                  <select value={e.status} onChange={ev=>setStatus(e.id,ev.target.value)} style={{fontSize:12,padding:"4px 8px",color:STATUS_COLOR[e.status]}}>
+                    {TASK_STATUS.map(s=><option key={s}>{s}</option>)}
+                  </select>
+                  {link && !e.gcalSynced && <a href={link} target="_blank" rel="noreferrer" onClick={()=>markSynced(e.id)} style={{display:"block",textAlign:"center",background:"#1a73e822",border:"1px solid #1a73e8",color:"#1a73e8",borderRadius:8,padding:"5px 10px",fontSize:12,fontWeight:600}}>📅 + Google Calendar</a>}
+                  <Btn small outline color={G.danger} onClick={()=>del(e.id)}>✕ Remover</Btn>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// PAPERS
+// ═══════════════════════════════════════════════════════════
+const PAPER_STATUS = ["Para ler","Lendo","Lido","Fichado"];
+const PS_COLOR = {"Para ler":G.warn,Lendo:G.accent,Lido:G.accent3,Fichado:G.accent2};
+const emptyPaper = () => ({title:"",authors:"",year:"",source:"",tags:"",status:"Para ler",notes:""});
+
+function PaperSection({ entries, setEntries }) {
+  const [form,setForm] = useState(emptyPaper());
+  const [filter,setFilter] = useState("all");
+  const add = () => { if(!form.title.trim()) return; setEntries(p=>[...p,{...form,id:Date.now()}]); setForm(emptyPaper()); };
+  const del = id => setEntries(p=>p.filter(e=>e.id!==id));
+  const setStatus = (id,status) => setEntries(p=>p.map(e=>e.id===id?{...e,status}:e));
+  const filtered = filter==="all"?entries:entries.filter(e=>e.status===filter);
+  const counts = PAPER_STATUS.reduce((a,s)=>{a[s]=entries.filter(e=>e.status===s).length;return a},{total:entries.length});
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:20}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))",gap:12}}>
+        <StatCard label="Total" value={counts.total} icon="🔬" color={G.accent3}/>
+        {PAPER_STATUS.map(s=><StatCard key={s} label={s} value={counts[s]} icon={s==="Fichado"?"📝":s==="Lido"?"✅":s==="Lendo"?"👁️":"📄"} color={PS_COLOR[s]}/>)}
+      </div>
+      <div style={{background:G.card,border:`1px solid ${G.border}`,borderRadius:16,padding:24}}>
+        <h3 style={{fontSize:16,fontWeight:700,marginBottom:16,color:G.accent3}}>+ Novo Paper / Artigo</h3>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+          <Field label="Título"><input placeholder="Título completo..." value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></Field>
+          <Field label="Autores"><input placeholder="Silva, J.; Santos, M." value={form.authors} onChange={e=>setForm({...form,authors:e.target.value})}/></Field>
+          <Field label="Ano"><input placeholder="2024" value={form.year} onChange={e=>setForm({...form,year:e.target.value})}/></Field>
+          <Field label="Fonte / Journal"><input placeholder="Nature, ArXiv..." value={form.source} onChange={e=>setForm({...form,source:e.target.value})}/></Field>
+          <Field label="Tags"><input placeholder="IA, NLP..." value={form.tags} onChange={e=>setForm({...form,tags:e.target.value})}/></Field>
+          <Field label="Status"><select value={form.status} onChange={e=>setForm({...form,status:e.target.value})}>{PAPER_STATUS.map(s=><option key={s}>{s}</option>)}</select></Field>
+          <Field label="Notas"><textarea rows={2} value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})}/></Field>
+        </div>
+        <div style={{display:"flex",justifyContent:"flex-end",marginTop:14}}><Btn onClick={add} color={G.accent3}>Adicionar Paper</Btn></div>
+      </div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+        <Pill active={filter==="all"} onClick={()=>setFilter("all")}>Todos ({counts.total})</Pill>
+        {PAPER_STATUS.map(s=><Pill key={s} active={filter===s} onClick={()=>setFilter(s)} color={PS_COLOR[s]}>{s} ({counts[s]})</Pill>)}
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:12}}>
+        {filtered.length===0 ? <div style={{background:G.card,borderRadius:12,padding:40,textAlign:"center",color:G.muted}}>Nenhum paper. Adicione um artigo! 🔬</div>
+        : filtered.map(e=>(
+          <div key={e.id} style={{background:G.card,border:`1px solid ${G.border}`,borderRadius:14,padding:20}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+              <div style={{flex:1}}>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:8}}><Badge label={e.status} color={PS_COLOR[e.status]}/>{e.tags&&e.tags.split(",").map(t=><Badge key={t} label={t.trim()} color={G.muted}/>)}</div>
+                <h4 style={{fontSize:15,fontWeight:700,marginBottom:4}}>{e.title}</h4>
+                {e.authors && <p style={{fontSize:13,color:G.muted}}>👤 {e.authors}{e.year?` (${e.year})`:""}</p>}
+                {e.source && <p style={{fontSize:13,color:G.muted}}>📰 {e.source}</p>}
+                {e.notes && <div style={{background:G.bg,borderRadius:8,padding:"8px 12px",marginTop:8,fontSize:13,color:G.muted}}>💬 {e.notes}</div>}
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:6,marginLeft:12}}>
+                <select value={e.status} onChange={ev=>setStatus(e.id,ev.target.value)} style={{fontSize:12,padding:"4px 8px",color:PS_COLOR[e.status]}}>{PAPER_STATUS.map(s=><option key={s}>{s}</option>)}</select>
+                <Btn small outline color={G.danger} onClick={()=>del(e.id)}>✕ Remover</Btn>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// APP PRINCIPAL
+// ═══════════════════════════════════════════════════════════
+const TABS = [
+  {id:"estudos",  label:"📚 Estudos",           color:G.accent},
+  {id:"tarefas",  label:"💼 Trabalho & Faculdade",color:G.accent2},
+  {id:"papers",   label:"🔬 Papers",             color:G.accent3},
+  {id:"cloud",    label:"☁️ Nuvem",              color:"#38bdf8"},
+  {id:"deploy",   label:"🚀 Deploy",             color:"#f0f6ff"},
+];
+
+function App() {
+  const [tab,setTab]       = useState("estudos");
+  const [studies,setStudies] = useState([]);
+  const [tasks,setTasks]   = useState([]);
+  const [papers,setPapers] = useState([]);
+  const [cloudConfig,setCloudConfig] = useState({apiKey:"",binId:""});
+  const [syncStatus,setSyncStatus] = useState("idle");
+  const [lastSync,setLastSync] = useState(null);
+  const saveTimer = useRef(null);
+  const initialized = useRef(false);
+
+  // Carregar config e dados locais
+  useEffect(()=>{
+    try {
+      const cfg = localStorage.getItem(CLOUD_CONFIG_KEY);
+      if(cfg) setCloudConfig(JSON.parse(cfg));
+    } catch {}
+    try {
+      const raw = localStorage.getItem("tracker_data_v3");
+      if(raw){ const d=JSON.parse(raw); if(d.studies)setStudies(d.studies); if(d.tasks)setTasks(d.tasks); if(d.papers)setPapers(d.papers); }
+    } catch {}
+  },[]);
+
+  // Carregar da nuvem na inicialização
+  useEffect(()=>{
+    if(!cloudConfig.apiKey||!cloudConfig.binId) return;
+    setSyncStatus("loading");
+    cloudLoad(cloudConfig).then(data=>{
+      if(data){ if(data.studies)setStudies(data.studies); if(data.tasks)setTasks(data.tasks); if(data.papers)setPapers(data.papers); setSyncStatus("saved"); setLastSync(new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})); }
+      else setSyncStatus("idle");
+      initialized.current = true;
+    });
+  },[cloudConfig.apiKey,cloudConfig.binId]);
+
+  // Auto-save com debounce
+  const doSave = useCallback(async(s,t,p)=>{
+    localStorage.setItem("tracker_data_v3",JSON.stringify({studies:s,tasks:t,papers:p}));
+    if(!cloudConfig.apiKey||!cloudConfig.binId) return;
+    setSyncStatus("saving");
+    const res = await cloudSave(cloudConfig,{studies:s,tasks:t,papers:p});
+    if(res.ok){ setSyncStatus("saved"); setLastSync(new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})); }
+    else setSyncStatus("error");
+  },[cloudConfig]);
+
+  useEffect(()=>{
+    if(!initialized.current) return;
+    clearTimeout(saveTimer.current);
+    setSyncStatus("saving");
+    saveTimer.current = setTimeout(()=>doSave(studies,tasks,papers),1200);
+  },[studies,tasks,papers]);
+
+  const handleCloudSave = cfg => {
+    setCloudConfig(cfg);
+    localStorage.setItem(CLOUD_CONFIG_KEY,JSON.stringify(cfg));
+    initialized.current = true;
+    setSyncStatus("loading");
+    cloudLoad(cfg).then(data=>{
+      if(data){ if(data.studies)setStudies(data.studies); if(data.tasks)setTasks(data.tasks); if(data.papers)setPapers(data.papers); }
+      doSave(studies,tasks,papers);
+    });
+  };
+
+  const urgentCount = tasks.filter(e=>{ const d=daysLeft(e.deadline); return d!==null&&d>=0&&d<=2&&e.status!=="Concluído"; }).length;
+  const cloudConfigured = !!(cloudConfig.apiKey&&cloudConfig.binId);
+
+  return (
+    <div style={{minHeight:"100vh",background:G.bg,paddingBottom:40}}>
+      {/* Header */}
+      <div style={{background:G.surface,borderBottom:`1px solid ${G.border}`,padding:"16px 32px",position:"sticky",top:0,zIndex:100}}>
+        <div style={{maxWidth:1100,margin:"0 auto"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <div>
+              <h1 style={{fontSize:22,fontWeight:700,background:`linear-gradient(90deg,${G.accent},${G.accent2})`,WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>⚡ Tracker Acadêmico</h1>
+              <p style={{fontSize:12,color:G.muted,marginTop:2}}>Estudos · Trabalho · Faculdade · Papers</p>
+            </div>
+            <div style={{display:"flex",gap:10,alignItems:"center"}}>
+              {urgentCount>0 && <div style={{background:G.warn+"22",border:`1px solid ${G.warn}`,borderRadius:20,padding:"6px 14px",color:G.warn,fontSize:13,fontWeight:700}}>⚠️ {urgentCount} urgente(s)</div>}
+            </div>
+          </div>
+          <SyncBar status={syncStatus} lastSync={lastSync} onSync={()=>doSave(studies,tasks,papers)} cloudConfigured={cloudConfigured}/>
+        </div>
+      </div>
+      {/* Tabs */}
+      <div style={{background:G.surface,borderBottom:`1px solid ${G.border}`,padding:"0 32px"}}>
+        <div style={{maxWidth:1100,margin:"0 auto",display:"flex",gap:4,overflowX:"auto"}}>
+          {TABS.map(t=>(
+            <button key={t.id} onClick={()=>setTab(t.id)} style={{background:"transparent",border:"none",borderBottom:`2px solid ${tab===t.id?t.color:"transparent"}`,color:tab===t.id?t.color:G.muted,padding:"14px 18px",fontSize:14,fontWeight:600,transition:"all .15s",whiteSpace:"nowrap"}}>
+              {t.label}{t.id==="cloud"&&!cloudConfigured&&<span style={{marginLeft:4,fontSize:9,background:G.warn,color:"#fff",borderRadius:10,padding:"1px 5px"}}>CONFIG</span>}
+            </button>
+          ))}
+        </div>
+      </div>
+      {/* Content */}
+      <div style={{maxWidth:1100,margin:"32px auto",padding:"0 32px"}}>
+        {tab==="estudos" && <StudySection entries={studies} setEntries={setStudies}/>}
+        {tab==="tarefas" && <TaskSection  entries={tasks}   setEntries={setTasks}/>}
+        {tab==="papers"  && <PaperSection entries={papers}  setEntries={setPapers}/>}
+        {tab==="cloud"   && <CloudSetup   config={cloudConfig} onSave={handleCloudSave}/>}
+        {tab==="deploy"  && <DeployGuide/>}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
